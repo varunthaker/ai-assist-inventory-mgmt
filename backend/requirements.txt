@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+supabase
+python-dotenv
+
+# Agent
+langchain
+langchain-openai
+langchain-mcp-adapters
+
+# MCP server (app/mcp). Pinned below 2.0: langchain-mcp-adapters requires it,
+# and server + client share this venv.
+mcp>=1.24,<2
