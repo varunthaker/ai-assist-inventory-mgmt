@@ -41,6 +41,17 @@ class Settings:
     # to not send it -- non-reasoning models like gpt-4o-mini reject it.
     openai_reasoning_effort: str = ""
 
+    # Embedding model for RAG (PDF chunks and search queries). Separate from the
+    # chat LLM above because Groq has no embeddings endpoint. The dimension must
+    # match vector(N) in sql/sop_documents.sql.
+    embedding_api_key: str = ""
+    # Explicit default on purpose: the OpenAI client falls back to the
+    # OPENAI_BASE_URL env var when given none, which points at Groq for the
+    # chat model -- embeddings would silently go to Groq and fail with 401.
+    embedding_base_url: str = "https://api.openai.com/v1"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+
     # Where the agent connects to the MCP server. It is mounted in this same
     # app, so this is our own /mcp; point it elsewhere to use a remote server.
     mcp_server_url: str = "http://127.0.0.1:8000/mcp"
@@ -64,6 +75,15 @@ class Settings:
                 f"Copy .env.example to .env in {BACKEND_DIR} and fill them in."
             )
 
+    def validate_embeddings(self) -> None:
+        """Raise a clear error if the embedding model's key is missing."""
+        if not self.embedding_api_key:
+            raise RuntimeError(
+                "Missing required environment variable: EMBEDDING_API_KEY "
+                "(an OpenAI key, platform.openai.com/api-keys). "
+                f"Add it to {BACKEND_DIR / '.env'} to upload or search documents."
+            )
+
     def validate_openai(self) -> None:
         """Raise a clear error if the agent's LLM credentials are missing.
 
@@ -84,6 +104,10 @@ settings = Settings(
     openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
     openai_base_url=os.getenv("OPENAI_BASE_URL", ""),
     openai_reasoning_effort=os.getenv("OPENAI_REASONING_EFFORT", ""),
+    embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
+    embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or "https://api.openai.com/v1",
+    embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+    embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "1536")),
     mcp_server_url=os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp"),
     mcp_allowed_hosts=tuple(
         h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()

@@ -11,3 +11,9 @@ langchain-mcp-adapters
 # MCP server (app/mcp). Pinned below 2.0: langchain-mcp-adapters requires it,
 # and server + client share this venv.
 mcp>=1.24,<2
+
+# RAG: PDF upload -> chunk -> embed
+python-multipart
+pypdf
+langchain-text-splitters
+tiktoken

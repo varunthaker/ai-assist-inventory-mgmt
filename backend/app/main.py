@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.mcp.server import registered, server as mcp_server
-from app.routes import chat, health
+from app.routes import chat, documents, health
 
 # Build the MCP ASGI app up front: this also creates the session manager that
 # the lifespan below has to run.
@@ -36,6 +36,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(chat.router)
+app.include_router(documents.router)
 
 
 @app.get("/")
@@ -46,6 +47,7 @@ def root() -> dict:
         "version": "0.1.0",
         "health": "/health",
         "chat": "POST /chat",
+        "documents": "POST /documents",
         "mcp": "/mcp",
     }
 
