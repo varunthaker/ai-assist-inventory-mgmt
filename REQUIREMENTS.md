@@ -28,24 +28,28 @@ Rules:
 
 | Tool | Input | Returns | Status |
 |---|---|---|---|
-| `search_procurement_policy` | `query` | top matching policy chunk(s) + source title | todo |
+| `search_procurement_policy` | `query`, `top_k?` | top matching policy chunk(s) + source title + pages | done |
 
-Needed:
-1. Enable `pgvector` in Supabase.
+PDF ingestion — **done**: `POST /documents` (upload → extract → chunk → embed →
+save, replaces same file name), `GET /documents`, `DELETE /documents/{title}`.
+Code in `backend/app/rag/`. Table created (`sql/sop_documents.sql`).
+
+How it is built:
+1. `pgvector` enabled in Supabase.
 2. `sop_documents` table: `id`, `title`, `chunk_index`, `content`,
-   `embedding vector(N)`, `created_at` (does not exist yet).
+   `page_start`, `page_end`, `embedding vector(1536)`, `created_at`.
 3. HNSW index on `embedding` (`vector_cosine_ops`).
-4. SQL function `match_sop_documents(query_embedding, match_count)`, called via
-   `rpc()` — the Supabase client cannot order by vector distance directly.
-5. Embedding model — **decision pending**. Groq (current LLM) has no embeddings.
-   Options: OpenAI `text-embedding-3-small` (1536 dims) or local
-   `all-MiniLM-L6-v2` (384 dims). The choice fixes `N`; ingest and query must
-   use the same model.
-6. Source documents: procurement policies / SOPs.
-7. Ingestion script (separate from MCP): load → chunk (~500 tokens, overlap) →
-   embed → insert.
-8. The tool: embed the query → `match_sop_documents` → top chunks with title
-   and similarity.
+4. Search query — SQL function `match_sop_documents` called via `rpc()`
+   (`sql/match_sop_documents.sql`, run). Chosen over a direct Postgres
+   connection for simpler setup; trade-off: re-upload delete + insert is not
+   one transaction.
+5. Embedding model — OpenAI `text-embedding-3-small` (1536 dims), own key
+   `EMBEDDING_API_KEY` (Groq, the chat LLM, has no embeddings).
+6. Source documents: procurement policies / SOPs, uploaded as PDFs.
+7. Ingestion via `POST /documents`: extract → chunk (500 tokens, 75 overlap) →
+   embed (title-prefixed) → replace rows for that file name.
+8. The tool: embed the query → `match_sop_documents` (min similarity 0.2) →
+   top chunks with source, pages and similarity.
 
 ## Later
 

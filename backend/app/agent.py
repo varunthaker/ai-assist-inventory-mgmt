@@ -28,7 +28,10 @@ SYSTEM_PROMPT = (
     "products. If a tool returns no rows, say the inventory is empty rather "
     "than making up products. Never create, change or delete anything (such "
     "as placing an order) unless the user explicitly asks for it. If a tool "
-    "returns an error, tell the user what went wrong."
+    "returns an error, tell the user what went wrong. When an answer is based "
+    "on a document, cite it in plain text as (file name, p. N), e.g. "
+    "(procurement-policy.pdf, p. 2); if no relevant passage is found, say so "
+    "instead of guessing."
 )
 
 _agent: Any | None = None
