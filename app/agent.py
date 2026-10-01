@@ -17,7 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import before_model
+from langchain_core.messages import RemoveMessage
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from app.config import settings
 from app.mcp.client import get_tools
@@ -38,6 +42,33 @@ SYSTEM_PROMPT = (
 
 _agent: Any | None = None
 _agent_lock = asyncio.Lock()
+
+# Conversation memory: stores each conversation's messages by conversation id
+# (LangGraph calls it thread_id) and feeds them back to the model on the next
+# turn. Kept in RAM -- lost when the server restarts (including --reload).
+# Module-level so reset_agent() does not wipe conversations.
+_memory = InMemorySaver()
+
+# How many user questions a conversation remembers, counting the current one.
+# Older questions -- with their answers and tool calls -- are forgotten.
+MAX_QUESTIONS = 10
+
+
+@before_model
+def _keep_recent_questions(state: dict, runtime: Any) -> dict | None:
+    """Trim the conversation to its last MAX_QUESTIONS questions.
+
+    Runs before every model call. It cuts only at the start of a user
+    question, so a tool call is never separated from its result (the model API
+    rejects that). The trimmed history replaces the stored one, so memory use
+    stays bounded too.
+    """
+    messages = state["messages"]
+    questions = [i for i, m in enumerate(messages) if m.type == "human"]
+    if len(questions) <= MAX_QUESTIONS:
+        return None
+    keep_from = questions[-MAX_QUESTIONS]
+    return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[keep_from:]]}
 
 
 async def get_agent() -> Any:
@@ -70,7 +101,13 @@ async def get_agent() -> Any:
             temperature=0,
         )
 
-        _agent = create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
+        _agent = create_agent(
+            model=model,
+            tools=tools,
+            system_prompt=SYSTEM_PROMPT,
+            middleware=[_keep_recent_questions],
+            checkpointer=_memory,
+        )
         return _agent
 
 
@@ -152,13 +189,24 @@ def _tool_calls(messages: list[Any]) -> list[ToolCall]:
     return list(calls.values())
 
 
-async def run_agent(user_message: str) -> AgentReply:
-    """Run one turn through the agent: its reply plus the tools it called.
+async def run_agent(user_message: str, conversation_id: str) -> AgentReply:
+    """Run one turn of a conversation: the reply plus the tools called this turn.
 
-    This is the single entrypoint the /chat route calls. Its signature does not
-    change as tools are added.
+    Earlier turns of the same conversation_id are loaded from memory, so the
+    model sees the whole conversation. This is the single entrypoint the /chat
+    route calls; its signature does not change as tools are added.
     """
     agent = await get_agent()
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": user_message}]})
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": user_message}]},
+        config={"configurable": {"thread_id": conversation_id}},
+    )
     messages = result["messages"]
-    return AgentReply(text=_message_text(messages[-1]), tool_calls=_tool_calls(messages))
+
+    # result["messages"] is the whole conversation; only report tool calls
+    # made after this turn's user message.
+    turn_start = max(i for i, m in enumerate(messages) if getattr(m, "type", None) == "human")
+    return AgentReply(
+        text=_message_text(messages[-1]),
+        tool_calls=_tool_calls(messages[turn_start:]),
+    )

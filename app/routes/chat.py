@@ -5,6 +5,7 @@ run_agent() and returns whatever the agent says, so new MCP tools need no
 change here either.
 """
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
@@ -18,6 +19,13 @@ router = APIRouter(tags=["chat"])
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, examples=["list all products"])
+    conversation_id: str | None = Field(
+        default=None,
+        description=(
+            "Continue an existing conversation. Omit to start a new one; the "
+            "response returns the id to send with follow-up messages."
+        ),
+    )
 
 
 class ToolCallInfo(BaseModel):
@@ -35,6 +43,7 @@ class ToolCallInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    conversation_id: str
     reply: str
     tool_calls: list[ToolCallInfo] = Field(
         default_factory=list,
@@ -44,9 +53,14 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """Send a message to the warehouse agent and get its reply."""
+    """Send a message to the warehouse agent and get its reply.
+
+    Messages with the same conversation_id share history (kept in server
+    memory until restart), so follow-ups like "order 20 of those" work.
+    """
+    conversation_id = request.conversation_id or str(uuid.uuid4())
     try:
-        answer = await run_agent(request.message)
+        answer = await run_agent(request.message, conversation_id)
     except Exception as exc:  # noqa: BLE001 - surface the cause to the caller
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,6 +70,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             ),
         ) from exc
     return ChatResponse(
+        conversation_id=conversation_id,
         reply=answer.text,
         tool_calls=[
             ToolCallInfo(name=c.name, args=c.args, result=c.result, error=c.error)

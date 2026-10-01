@@ -32,7 +32,7 @@ Rules:
 
 PDF ingestion — **done**: `POST /documents` (upload → extract → chunk → embed →
 save, replaces same file name), `GET /documents`, `DELETE /documents/{title}`.
-Code in `backend/app/rag/`. Table created (`sql/sop_documents.sql`).
+Code in `app/rag/`. Table created (`sql/sop_documents.sql`).
 
 How it is built:
 1. `pgvector` enabled in Supabase.
@@ -56,6 +56,12 @@ How it is built:
 - ~~`POST /chat` returns metadata about which tool(s) were called~~ — **done**:
   `tool_calls: [{name, args, result, error}]`. CORS enabled for the Vite dev
   server (`CORS_ORIGINS`). Frontend: plain React (no CopilotKit / AG-UI).
-- Conversation memory (follow-ups like "order 20 of those").
-- Auth on `/mcp`, `/chat`, `/documents` before exposing publicly.
-- React frontend (separate).
+- ~~Conversation memory~~ — **done (in RAM)**: `/chat` takes/returns
+  `conversation_id`; LangGraph `InMemorySaver`. Keeps the last 10 questions
+  (`MAX_QUESTIONS` in `agent.py`) with their answers/tool calls. Lost on
+  restart. Later maybe: persist in Supabase, summarise long histories.
+- Auth on `/mcp`, `/chat`, `/documents` — **deferred, maybe not needed**: the
+  project runs locally. Required only if exposed publicly (e.g. ngrok).
+- React frontend — **separate repository**. Consumes `POST /chat`
+  (`conversation_id`, `tool_calls`) and the `/documents` endpoints; this repo's
+  `CORS_ORIGINS` must include its dev-server origin.

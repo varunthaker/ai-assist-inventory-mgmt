@@ -15,9 +15,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# backend/.env  (this file lives at backend/app/config.py)
-BACKEND_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BACKEND_DIR / ".env")
+# <repo root>/.env  (this file lives at <repo root>/app/config.py)
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_DIR / ".env")
 
 
 @dataclass(frozen=True)
@@ -27,8 +27,8 @@ class Settings:
     # key is never exposed, and bypassing RLS means queries are not silently
     # filtered to zero rows before any access policies exist.
     supabase_service_role_key: str
-    # Public key, unused by the backend. Kept here so the React frontend has
-    # one place to read it from later.
+    # Public key, unused by the backend (the React frontend, in its own repo,
+    # would use this kind of key). Optional.
     supabase_anon_key: str = ""
 
     # LLM used by the agent.
@@ -76,7 +76,7 @@ class Settings:
         if missing:
             raise RuntimeError(
                 f"Missing required environment variable(s): {', '.join(missing)}. "
-                f"Copy .env.example to .env in {BACKEND_DIR} and fill them in."
+                f"Copy .env.example to .env in {PROJECT_DIR} and fill them in."
             )
 
     def validate_embeddings(self) -> None:
@@ -85,7 +85,7 @@ class Settings:
             raise RuntimeError(
                 "Missing required environment variable: EMBEDDING_API_KEY "
                 "(an OpenAI key, platform.openai.com/api-keys). "
-                f"Add it to {BACKEND_DIR / '.env'} to upload or search documents."
+                f"Add it to {PROJECT_DIR / '.env'} to upload or search documents."
             )
 
     def validate_openai(self) -> None:
@@ -96,7 +96,7 @@ class Settings:
         if not self.openai_api_key:
             raise RuntimeError(
                 "Missing required environment variable: OPENAI_API_KEY. "
-                f"Add it to {BACKEND_DIR / '.env'} to use POST /chat."
+                f"Add it to {PROJECT_DIR / '.env'} to use POST /chat."
             )
 
 

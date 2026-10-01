@@ -1,6 +1,6 @@
 """FastAPI application entrypoint.
 
-Run from the backend/ directory:
+Run from the repository root:
     uvicorn app.main:app --reload
 
 Serves the REST API and the MCP server (at /mcp) from one process.

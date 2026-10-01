@@ -1,180 +1,281 @@
 # AI Warehouse Inventory Assistant
 
-FastAPI + Supabase (Postgres) backend with a LangChain agent that answers
-inventory questions using tools served by an MCP server.
+A FastAPI backend with an LLM agent that answers warehouse questions by
+combining two kinds of knowledge:
+
+- **Structured data (MCP tools)** — stock levels, low-stock reports, supplier
+  lead times and purchase orders, from Supabase Postgres.
+- **Documents (RAG)** — procurement policies and SOPs uploaded as PDFs,
+  searched by meaning with pgvector.
+
+The agent decides per question which tools to use, and can combine them:
+*"Pallets are low — how many must I order and who approves it?"* uses stock,
+supplier and policy lookups in one answer.
+
+The React frontend lives in a separate repository; this repo is the backend.
+Requirements and status: [REQUIREMENTS.md](REQUIREMENTS.md).
+
+## Architecture
+
+One process on port 8000 serves everything:
+
+```
+                 ┌──────────────────── FastAPI (port 8000) ────────────────────┐
+ React app ────► │ POST /chat ─► agent (LangChain) ─► MCP client ──┐           │
+ (other repo)    │                     ▲                           ▼           │
+                 │                     │ LLM (Groq / OpenAI)   /mcp  MCP server │ ◄── other MCP clients
+                 │                                                 │  tools/   │
+                 │ POST /documents ─► RAG pipeline                 │           │
+                 └──────────────────────────┬──────────────────────┼───────────┘
+                                            ▼                      ▼
+                                  OpenAI embeddings      Supabase Postgres + pgvector
+```
+
+The agent reaches its tools through the `/mcp` endpoint, not by importing them,
+so the same tools are available to any MCP client.
 
 ## Structure
 
-One process on port 8000 serves both the REST API and the MCP server (mounted
-at `/mcp`). The agent reaches its tools through that `/mcp` endpoint, so the
-same server can also be used by any other MCP client.
-
 ```
 ai-asist-warehouse/
-├── backend/
-│   ├── app/
-│   │   ├── main.py          # FastAPI app; also mounts the MCP server at /mcp
-│   │   ├── config.py        # env vars
-│   │   ├── db.py            # Supabase client (API routes + MCP tools)
-│   │   ├── agent.py         # BASE agent — no MCP code, just gets a tool list
-│   │   ├── routes/
-│   │   │   ├── health.py    # GET /health
-│   │   │   └── chat.py      # POST /chat, GET /chat/tools
-│   │   └── mcp/
-│   │       ├── server.py    # MCP server, auto-registers tools/
-│   │       ├── client.py    # backend side: discovers tools over the wire
-│   │       └── tools/
-│   │           ├── __init__.py   # auto-discovers tool modules
-│   │           ├── products.py         # list_products, get_stock_level, list_low_stock_items
-│   │           ├── suppliers.py        # check_supplier_lead_time
-│   │           └── purchase_orders.py  # create_purchase_order (the only write)
-│   ├── requirements.txt
-│   └── .env.example
+├── app/
+│   ├── main.py            # FastAPI app, CORS, mounts the MCP server at /mcp
+│   ├── config.py          # all settings, from .env
+│   ├── db.py              # Supabase client
+│   ├── agent.py           # the agent: model, memory, tool-call metadata (no MCP code)
+│   ├── routes/
+│   │   ├── health.py      # GET /health
+│   │   ├── chat.py        # POST /chat, GET /chat/tools
+│   │   └── documents.py   # POST/GET /documents, DELETE /documents/{title}
+│   ├── mcp/
+│   │   ├── server.py      # MCP server, auto-registers tools/
+│   │   ├── client.py      # discovers the tools over the wire for the agent
+│   │   └── tools/         # one module per tool group, auto-discovered
+│   │       ├── products.py         # list_products, get_stock_level, list_low_stock_items
+│   │       ├── suppliers.py        # check_supplier_lead_time
+│   │       ├── purchase_orders.py  # create_purchase_order (the only write)
+│   │       └── policy.py           # search_procurement_policy (RAG)
+│   └── rag/               # PDF -> text -> chunks -> embeddings -> DB, and search
+│       ├── pdf.py         # extract text per page
+│       ├── chunking.py    # ~500-token chunks, 75-token overlap, page ranges
+│       ├── embeddings.py  # OpenAI text-embedding-3-small
+│       ├── store.py       # save / list / delete in sop_documents
+│       └── search.py      # similarity search via match_sop_documents
 ├── sql/
-│   └── schema.sql           # suppliers / products / purchase_orders
+│   ├── schema.sql              # suppliers / products / purchase_orders
+│   ├── sop_documents.sql       # pgvector + document chunks table + index
+│   └── match_sop_documents.sql # similarity search function
+├── sample_docs/           # supplier-policy.pdf (+ .md source) for testing RAG
+├── requirements.txt
+├── .env.example           # copy to .env (gitignored) and fill in
+├── REQUIREMENTS.md
 └── README.md
 ```
 
 ## Setup
 
+### 1. Install
+
 ```bash
-cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
 cp .env.example .env
-# fill in the values from
-# Supabase dashboard -> Project Settings -> API
 ```
 
-### What the variables mean
+### 2. Database (Supabase SQL editor)
 
-| Variable | Supabase calls it | Respects RLS? | Used by |
-|---|---|---|---|
-| `SUPABASE_URL` | Project URL (`https://<ref>.supabase.co`) | n/a | backend + frontend |
-| `SUPABASE_SERVICE_ROLE_KEY` | `service_role` / `sb_secret_...` | **No — bypasses it** | backend only |
-| `SUPABASE_ANON_KEY` | `anon` / `sb_publishable_...` | Yes | React frontend (later) |
+Run these once, in order. All are safe to re-run.
 
-Only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are required to boot.
+| File | Creates |
+|---|---|
+| `sql/schema.sql` | `suppliers`, `products`, `purchase_orders` |
+| `sql/sop_documents.sql` | the pgvector extension, the `sop_documents` chunk table, an HNSW index |
+| `sql/match_sop_documents.sql` | `match_sop_documents()` — the similarity search (the REST client cannot sort by vector distance itself) |
 
-The backend uses the **service_role** key: it runs server-side so the key is
-never exposed, and bypassing RLS means `/health` counts real rows instead of
-returning `0` because no access policy exists yet. That key is full database
-access — `.env` is gitignored, and it must never reach the frontend.
+`vector(1536)` in the SQL must match the embedding model. Changing the model
+means changing that number, recreating the table and re-uploading every PDF.
 
-## Database
+### 3. Environment variables (`.env`)
 
-Tables already exist in your Supabase project; `sql/schema.sql` is the
-checked-in copy of that schema and is safe to re-run.
+| Variable | Required | What it is |
+|---|---|---|
+| `SUPABASE_URL` | yes | Project URL, `https://<ref>.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | `service_role` / `sb_secret_...` key. Bypasses RLS — backend only |
+| `SUPABASE_ANON_KEY` | no | Public key; not used by the backend |
+| `OPENAI_API_KEY` | for `/chat` | Key for the **chat** LLM — an OpenAI key, or a Groq key (`gsk_...`) |
+| `OPENAI_BASE_URL` | no | Empty for OpenAI; `https://api.groq.com/openai/v1` for Groq |
+| `OPENAI_MODEL` | no | Default `gpt-4o-mini`; e.g. `openai/gpt-oss-20b` on Groq |
+| `OPENAI_REASONING_EFFORT` | no | `low` / `medium` / `high` for reasoning models only. **Use `low` with Groq gpt-oss-20b** (see Troubleshooting) |
+| `EMBEDDING_API_KEY` | for documents | **OpenAI** key for embeddings — separate because Groq has no embeddings |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | no | Default `text-embedding-3-small` / `1536`; must match the SQL |
+| `CORS_ORIGINS` | no | Browser origins allowed to call the API. Default: the Vite dev server, `http://localhost:5173` and `http://127.0.0.1:5173` |
+| `MCP_SERVER_URL` | no | Where the agent finds `/mcp`. Change only if uvicorn runs on another host/port |
+| `MCP_ALLOWED_HOSTS` | no | Public hostnames allowed to reach `/mcp`, e.g. an ngrok domain (otherwise 421) |
+
+Only the two Supabase values are needed to boot; `/health` works without any
+LLM key. `.env` is gitignored — never commit keys or put them in `.env.example`.
 
 ## Run
 
+All commands run from the repository root.
+
 ```bash
-cd backend
 source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
 
-On startup it prints the tool modules it registered:
+On startup it prints the registered tool modules:
 
 ```
-MCP tool modules: products
+MCP tool modules: policy, products, purchase_orders, suppliers
 ```
 
-The MCP endpoint is http://127.0.0.1:8000/mcp. If you run uvicorn on another
-host or port, set `MCP_SERVER_URL` in `.env` to match.
+- API docs (try every endpoint, including PDF upload): http://127.0.0.1:8000/docs
+- MCP endpoint: http://127.0.0.1:8000/mcp
 
-The `mcp` package is pinned below 2.0 because `langchain-mcp-adapters` requires
-it, so the server uses the 1.x class `FastMCP` (renamed `MCPServer` in 2.x).
+`--reload` restarts on `.py` changes but **not** on `.env` changes — restart
+manually after editing `.env`.
 
-## Verify
+## API
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+### `GET /health`
 
-Healthy:
+Checks the Supabase connection.
 
 ```json
-{"status": "ok", "database": "connected", "products_count": 0}
+{"status": "ok", "database": "connected", "products_count": 5}
 ```
 
-If Supabase is unreachable or misconfigured the route returns HTTP 503 with
-`"status": "degraded"` and the underlying error message.
+HTTP 503 with `"status": "degraded"` and the error if Supabase is unreachable.
 
-### Test the agent
+### `POST /chat`
 
-Check which tools the agent discovered — no LLM call, so this is free:
+Send a message; get the agent's reply plus the tools it used.
 
 ```bash
-curl http://127.0.0.1:8000/chat/tools
+curl -X POST http://127.0.0.1:8000/chat -H 'Content-Type: application/json' \
+  -d '{"message": "Which safety items are low, and who approves orders above 5000 euros?"}'
 ```
 
 ```json
-{"count": 1, "tools": [{"name": "list_products", "description": "List every product ..."}]}
+{
+  "conversation_id": "bad67739-ccad-4302-bf2f-fd2add609b65",
+  "reply": "**Low-stock safety items** ... (procurement-policy.pdf, p. 1)",
+  "tool_calls": [
+    {"name": "list_low_stock_items", "args": {"category": "safety"},
+     "result": {"category": "safety", "count": 1, "items": [...]}, "error": false},
+    {"name": "search_procurement_policy", "args": {"query": "approval above 5000 euros"},
+     "result": {"count": 3, "results": [{"source": "...", "pages": "1", "similarity": 0.44, "text": "..."}]},
+     "error": false}
+  ]
+}
 ```
 
-Then talk to it:
+- **Conversations:** omit `conversation_id` to start a new one; send the
+  returned id with follow-ups so "order 20 of those" works. The agent remembers
+  the **last 10 questions** (`MAX_QUESTIONS` in `agent.py`) with their answers
+  and tool calls. History is kept in server memory and is **lost on restart**.
+- **`tool_calls`:** the tools called this turn, in order, with their JSON
+  results — for rendering tables, order cards and citations. `error: true`
+  marks failed attempts (e.g. a guessed SKU that doesn't exist), which the agent
+  usually retries.
+- HTTP 503 with the reason if the LLM key is missing or `/mcp` is unreachable.
+
+### `GET /chat/tools`
+
+The tools the agent can see — no LLM call.
+
+### Documents (RAG)
+
+| Endpoint | Does |
+|---|---|
+| `POST /documents` (multipart `file`) | Upload a PDF: extract → chunk → embed → save. Same file name **replaces** the stored version. Returns 201 with `{title, pages, chunks, replaced_chunks, embedding_tokens}` |
+| `GET /documents` | List stored documents with chunk/page counts and upload time |
+| `DELETE /documents/{title}` | Delete a document by file name (404 if unknown) |
 
 ```bash
-curl -X POST http://127.0.0.1:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message": "list all products"}'
+curl -X POST http://127.0.0.1:8000/documents -F "file=@sample_docs/supplier-policy.pdf"
 ```
 
-```json
-{"reply": "You have 3 products in inventory: ..."}
-```
+Rejected uploads: non-PDF files (415), over 20 MB (413), damaged or
+password-protected PDFs and scans with no text layer (422 — scans would need OCR).
 
-`POST /chat` returns HTTP 503 with the underlying reason if the MCP endpoint is
-unreachable (e.g. `MCP_SERVER_URL` points at the wrong port) or
-`OPENAI_API_KEY` is missing.
+## Tools
 
-Interactive docs: http://127.0.0.1:8000/docs
+| Tool | Input | Returns |
+|---|---|---|
+| `list_products` | — | every product with stock and threshold |
+| `get_stock_level` | `sku` | name, quantity, unit, threshold |
+| `list_low_stock_items` | `category?` | products below their reorder threshold, with shortfall |
+| `check_supplier_lead_time` | `sku` | supplier name, lead time, minimum order quantity, email |
+| `create_purchase_order` | `sku`, `quantity` | new order id and status. Rejects unknown SKUs, quantity ≤ 0, and quantities below the supplier minimum. The agent only uses it when explicitly asked |
+| `search_procurement_policy` | `query`, `top_k?` (1–5, default 3) | most relevant passages with source file, pages and similarity; "no relevant passage" below 0.2 similarity |
+
+## How RAG works here
+
+**Ingestion** (`POST /documents`):
+
+1. **Extract** text page by page with pypdf (`rag/pdf.py`).
+2. **Chunk** into ~500-token pieces with 75 tokens of overlap, splitting at
+   paragraphs, then lines, sentences, words; each chunk records the pages it
+   spans (`rag/chunking.py`).
+3. **Embed** each chunk with `text-embedding-3-small` (1536 numbers per chunk),
+   prefixed with the file name for context (`rag/embeddings.py`).
+4. **Save** to `sop_documents`, replacing any previous version of the file
+   (`rag/store.py`). Embedding happens first, so an OpenAI failure never touches
+   the database.
+
+**Search** (`search_procurement_policy`): the question is embedded with the
+same model, `match_sop_documents` returns the closest chunks by cosine
+similarity, and chunks below 0.2 are dropped. With this model, relevant matches
+typically score 0.3–0.5 and unrelated text ~0.03.
 
 ## How dynamic tool loading works
 
-The goal: adding a tool means adding **one file** to `backend/app/mcp/tools/`.
-Neither `server.py`, `client.py` nor `agent.py` is ever edited.
+Adding a tool means adding **one file** to `app/mcp/tools/` — no edits
+to `server.py`, `client.py`, `agent.py` or `chat.py`.
 
-**1. The MCP server auto-registers tool modules.** `tools/__init__.py` walks the
-package with `pkgutil.iter_modules()`, imports each module, and calls its
-`register(server)` function. Each module registers its own functions with
-`@server.tool(...)`. Drop in `suppliers.py` with a `register()` and it is served.
+1. **The server auto-registers tool modules.** `tools/__init__.py` imports every
+   module in the package and calls its `register(server)`, which registers
+   functions with `@server.tool(...)`.
+2. **The client discovers tools over the wire.** `mcp/client.py` sends an MCP
+   `tools/list` request; each tool's name, description and JSON-Schema
+   arguments (from type hints) become a LangChain tool.
+3. **The agent gets whatever came back.** `agent.py` never names a tool. The LLM
+   picks tools from their descriptions alone — which is why descriptions are
+   written for a reader.
 
-**2. The client discovers tools over the wire.** `app/mcp/client.py` never names
-a tool. On the first request the agent asks it for tools, and it calls:
+The agent is built once and cached; new tools are picked up on restart
+(automatic with `--reload`).
 
-```python
-return await _mcp_client.get_tools()
-```
+### Adding a tool
 
-That issues an MCP `tools/list` call to the server, which answers with each
-tool's name, description, and JSON-Schema arguments — all derived from your
-Python type hints and docstrings. `langchain-mcp-adapters` converts each one
-into a LangChain `StructuredTool`.
+1. Create `app/mcp/tools/<name>.py` with a `register(server)` function.
+2. Save — `--reload` restarts the server.
+3. `curl http://127.0.0.1:8000/chat/tools` — it is listed.
 
-**3. The agent gets whatever came back.** `agent.py` has no MCP code:
+Return errors as `{"error": "..."}` instead of raising: the MCP SDK replaces a
+raised exception with a generic message, hiding the cause from the agent.
 
-```python
-tools = await get_tools()
-_agent = create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
-```
+## Troubleshooting
 
-The tool list is data, not code. The LLM reads the descriptions and decides
-which tool to call; `create_agent` runs the call loop. That is why the tool
-description in `products.py` is written for a reader — it is the only thing the
-model uses to decide whether the tool is relevant.
+| Symptom | Cause / fix |
+|---|---|
+| `/chat` returns `{"reply": ""}` or 503 `output_parse_failed` | Groq gpt-oss-20b at default reasoning effort fails on multi-tool questions. Set `OPENAI_REASONING_EFFORT=low` |
+| Upload fails with 401 "Invalid API Key" | The embeddings request went to Groq. `EMBEDDING_BASE_URL` must be empty or OpenAI's URL; the default already is |
+| Upload fails with 429 `insufficient_quota` | The OpenAI account has no API credit (Settings → Billing) |
+| `/mcp` via ngrok returns 421 | Add the ngrok hostname to `MCP_ALLOWED_HOSTS`, then restart |
+| `/mcp` returns 406 | Expected for browsers / plain curl — only MCP clients send the required `Accept` header |
+| Browser: "blocked by CORS policy" | Add the frontend's origin to `CORS_ORIGINS`, then restart |
+| Follow-up questions lose context | The server restarted (history is in memory), or the request lacked `conversation_id` |
 
-**Caching:** the agent is built once and reused, so `tools/list` is not re-sent
-on every request. A new tool is picked up after a restart (`--reload`
-does this automatically when you save the file).
+## Known limitations
 
-## Adding a tool later
-
-1. Create `backend/app/mcp/tools/<name>.py` with a `register(server)` function.
-2. Restart the backend (automatic with `--reload`).
-3. `curl http://127.0.0.1:8000/chat/tools` — it is there.
-
-No edits to `server.py`, `client.py`, `agent.py`, or `chat.py`.
+- **No authentication.** Fine on localhost. Anything exposed publicly (e.g. via
+  ngrok) lets anyone chat, create purchase orders, and upload/delete/search
+  documents — stop the tunnel when not in use.
+- **Conversation history is in memory** and lost on restart.
+- **Re-upload is two steps** (delete old chunks, insert new). If the insert
+  fails, the old version is already gone — the error says to re-upload.
+- `mcp` is pinned below 2.0 because `langchain-mcp-adapters` requires it.

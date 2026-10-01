@@ -1,5 +1,5 @@
 -- Run in the Supabase SQL editor after sql/sop_documents.sql. Safe to re-run.
--- Used by backend/app/rag/search.py.
+-- Used by app/rag/search.py.
 --
 -- Similarity search, called from Python via supabase.rpc("match_sop_documents").
 -- The REST API cannot ORDER BY vector distance itself, hence a function.
