@@ -9,7 +9,9 @@ Serves the REST API and the MCP server (at /mcp) from one process.
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.mcp.server import registered, server as mcp_server
 from app.routes import chat, documents, health
 
@@ -32,6 +34,15 @@ app = FastAPI(
     description="Backend API for warehouse inventory management.",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# Lets the React app (another origin, e.g. localhost:5173) call the API.
+# No cookies are used, so credentials stay off.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(health.router)

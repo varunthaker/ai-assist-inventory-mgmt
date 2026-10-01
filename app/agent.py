@@ -12,6 +12,8 @@ Flow:
 """
 
 import asyncio
+import json
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain.agents import create_agent
@@ -99,12 +101,64 @@ def _message_text(message: Any) -> str:
     return str(content)
 
 
-async def run_agent(user_message: str) -> str:
-    """Run one turn through the agent and return its natural-language reply.
+@dataclass
+class ToolCall:
+    """One tool the agent called during a turn, with what it got back."""
+
+    id: str
+    name: str
+    args: dict[str, Any]
+    result: Any = None  # parsed JSON when the tool returned JSON, else text
+    error: bool = False
+
+
+@dataclass
+class AgentReply:
+    text: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+def _tool_result(message: Any) -> Any:
+    """Parse a tool message's content back into the tool's return value.
+
+    MCP tools return JSON, which arrives as text content blocks; turning it
+    back into a dict lets the frontend render tables and cards from it.
+    """
+    text = _message_text(message)
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _tool_calls(messages: list[Any]) -> list[ToolCall]:
+    """Pair each tool call the model made with the result that came back.
+
+    Generic over tools: nothing here knows which tools exist.
+    """
+    calls: dict[str, ToolCall] = {}
+    for message in messages:
+        for tc in getattr(message, "tool_calls", None) or []:
+            calls[tc["id"]] = ToolCall(id=tc["id"], name=tc["name"], args=tc["args"])
+        call_id = getattr(message, "tool_call_id", None)
+        if call_id in calls:
+            call = calls[call_id]
+            call.result = _tool_result(message)
+            # Our tools report failures as {"error": ...} with a "success"
+            # status, so check both.
+            call.error = getattr(message, "status", None) == "error" or (
+                isinstance(call.result, dict) and "error" in call.result
+            )
+    return list(calls.values())
+
+
+async def run_agent(user_message: str) -> AgentReply:
+    """Run one turn through the agent: its reply plus the tools it called.
 
     This is the single entrypoint the /chat route calls. Its signature does not
     change as tools are added.
     """
     agent = await get_agent()
     result = await agent.ainvoke({"messages": [{"role": "user", "content": user_message}]})
-    return _message_text(result["messages"][-1])
+    messages = result["messages"]
+    return AgentReply(text=_message_text(messages[-1]), tool_calls=_tool_calls(messages))

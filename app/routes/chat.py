@@ -5,6 +5,8 @@ run_agent() and returns whatever the agent says, so new MCP tools need no
 change here either.
 """
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -18,15 +20,33 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, examples=["list all products"])
 
 
+class ToolCallInfo(BaseModel):
+    """A tool the agent used, so the frontend can render its data.
+
+    `result` is the tool's own JSON (e.g. a product list for a table, an order
+    for a card, policy passages for citations). Calls with `error: true` were
+    failed attempts -- often retried with corrected arguments.
+    """
+
+    name: str = Field(examples=["list_low_stock_items"])
+    args: dict[str, Any] = Field(examples=[{"category": "safety"}])
+    result: Any = None
+    error: bool = False
+
+
 class ChatResponse(BaseModel):
     reply: str
+    tool_calls: list[ToolCallInfo] = Field(
+        default_factory=list,
+        description="Tools called this turn, in order.",
+    )
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Send a message to the warehouse agent and get its reply."""
     try:
-        reply = await run_agent(request.message)
+        answer = await run_agent(request.message)
     except Exception as exc:  # noqa: BLE001 - surface the cause to the caller
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -35,7 +55,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 "(is the MCP server running, and is OPENAI_API_KEY set?)"
             ),
         ) from exc
-    return ChatResponse(reply=reply)
+    return ChatResponse(
+        reply=answer.text,
+        tool_calls=[
+            ToolCallInfo(name=c.name, args=c.args, result=c.result, error=c.error)
+            for c in answer.tool_calls
+        ],
+    )
 
 
 @router.get("/chat/tools")

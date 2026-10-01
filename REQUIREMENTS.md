@@ -53,6 +53,9 @@ How it is built:
 
 ## Later
 
-- `POST /chat` returns metadata about which tool(s) were called, so the React
-  frontend can render tables / cards / source citations.
+- ~~`POST /chat` returns metadata about which tool(s) were called~~ — **done**:
+  `tool_calls: [{name, args, result, error}]`. CORS enabled for the Vite dev
+  server (`CORS_ORIGINS`). Frontend: plain React (no CopilotKit / AG-UI).
+- Conversation memory (follow-ups like "order 20 of those").
+- Auth on `/mcp`, `/chat`, `/documents` before exposing publicly.
 - React frontend (separate).

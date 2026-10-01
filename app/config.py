@@ -52,6 +52,10 @@ class Settings:
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
+    # Browser origins allowed to call this API (the React dev server). Without
+    # CORS the browser blocks a page on another port from reading responses.
+    cors_origins: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173")
+
     # Where the agent connects to the MCP server. It is mounted in this same
     # app, so this is our own /mcp; point it elsewhere to use a remote server.
     mcp_server_url: str = "http://127.0.0.1:8000/mcp"
@@ -108,6 +112,11 @@ settings = Settings(
     embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or "https://api.openai.com/v1",
     embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
     embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "1536")),
+    cors_origins=tuple(
+        o.strip()
+        for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+        if o.strip()
+    ),
     mcp_server_url=os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp"),
     mcp_allowed_hosts=tuple(
         h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()
