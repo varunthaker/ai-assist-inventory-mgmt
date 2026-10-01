@@ -105,8 +105,8 @@ means changing that number, recreating the table and re-uploading every PDF.
 | `SUPABASE_ANON_KEY` | no | Public key; not used by the backend |
 | `OPENAI_API_KEY` | for `/chat` | Key for the **chat** LLM — an OpenAI key, or a Groq key (`gsk_...`) |
 | `OPENAI_BASE_URL` | no | Empty for OpenAI; `https://api.groq.com/openai/v1` for Groq |
-| `OPENAI_MODEL` | no | Default `gpt-4o-mini`; e.g. `openai/gpt-oss-20b` on Groq |
-| `OPENAI_REASONING_EFFORT` | no | `low` / `medium` / `high` for reasoning models only. **Use `low` with Groq gpt-oss-20b** (see Troubleshooting) |
+| `OPENAI_MODEL` | no | Default `gpt-4o-mini`. Recommended: **`gpt-5.4-mini`** (OpenAI). Also works: `openai/gpt-oss-20b` on Groq |
+| `OPENAI_REASONING_EFFORT` | no | Reasoning models only. **`none` for gpt-5.x** (tools + reasoning aren't allowed on the chat API), **`low` for Groq gpt-oss-20b** (see Troubleshooting) |
 | `EMBEDDING_API_KEY` | for documents | **OpenAI** key for embeddings — separate because Groq has no embeddings |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | no | Default `text-embedding-3-small` / `1536`; must match the SQL |
 | `CORS_ORIGINS` | no | Browser origins allowed to call the API. Default: the Vite dev server, `http://localhost:5173` and `http://127.0.0.1:5173` |
@@ -205,8 +205,8 @@ password-protected PDFs and scans with no text layer (422 — scans would need O
 
 | Tool | Input | Returns |
 |---|---|---|
-| `list_products` | — | every product with stock and threshold |
-| `get_stock_level` | `sku` | name, quantity, unit, threshold |
+| `list_products` | — | every product with stock, threshold and unit price (EUR) |
+| `get_stock_level` | `sku` | name, quantity, unit, threshold, unit price |
 | `list_low_stock_items` | `category?` | products below their reorder threshold, with shortfall |
 | `check_supplier_lead_time` | `sku` | supplier name, lead time, minimum order quantity, email |
 | `create_purchase_order` | `sku`, `quantity` | new order id and status. Rejects unknown SKUs, quantity ≤ 0, and quantities below the supplier minimum. The agent only uses it when explicitly asked |
@@ -255,14 +255,20 @@ The agent is built once and cached; new tools are picked up on restart
 2. Save — `--reload` restarts the server.
 3. `curl http://127.0.0.1:8000/chat/tools` — it is listed.
 
-Return errors as `{"error": "..."}` instead of raising: the MCP SDK replaces a
-raised exception with a generic message, hiding the cause from the agent.
+Give each tool a **typed return model** (a Pydantic `BaseModel`, with
+`Field(description=...)` on its fields): the MCP server then publishes an
+`outputSchema` for the tool, so clients know the exact result shape. A plain
+`dict` return publishes no schema. On failure **raise `ToolError("...")`**: the
+result is marked `isError`, the message is kept, and the agent receives it as a
+failed tool call it can explain or retry.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `/chat` returns `{"reply": ""}` or 503 `output_parse_failed` | Groq gpt-oss-20b at default reasoning effort fails on multi-tool questions. Set `OPENAI_REASONING_EFFORT=low` |
+| 503 "Function tools with reasoning_effort are not supported" | gpt-5.x with reasoning on the chat completions API. Set `OPENAI_REASONING_EFFORT=none` |
+| Agent places orders without checking policy / misstates approval rules | Weak model. gpt-oss-20b did this in testing; `gpt-5.4-mini` followed the rules |
 | Upload fails with 401 "Invalid API Key" | The embeddings request went to Groq. `EMBEDDING_BASE_URL` must be empty or OpenAI's URL; the default already is |
 | Upload fails with 429 `insufficient_quota` | The OpenAI account has no API credit (Settings → Billing) |
 | `/mcp` via ngrok returns 421 | Add the ngrok hostname to `MCP_ALLOWED_HOSTS`, then restart |

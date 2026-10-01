@@ -2,9 +2,23 @@
 
 from typing import Annotated
 
-from pydantic import Field
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import BaseModel, Field
 
 from app.db import get_supabase
+
+
+class SupplierInfo(BaseModel):
+    sku: str
+    product_name: str
+    supplier_name: str
+    lead_time_days: int | None = Field(
+        default=None, description="Days from placing an order to delivery."
+    )
+    min_order_qty: int | None = Field(
+        default=None, description="Smallest quantity this supplier accepts per order."
+    )
+    contact_email: str | None = None
 
 
 def register(server) -> None:
@@ -21,7 +35,7 @@ def register(server) -> None:
     )
     def check_supplier_lead_time(
         sku: Annotated[str, Field(description="Product SKU, e.g. 'PAL-STD-001'.")],
-    ) -> dict:
+    ) -> SupplierInfo:
         sku = sku.strip().upper()
         try:
             # Embedded select: follows products.supplier_id -> suppliers.id.
@@ -34,21 +48,23 @@ def register(server) -> None:
                 .execute()
             )
         except Exception as exc:  # noqa: BLE001
-            return {"error": f"Could not query supplier for {sku}: {type(exc).__name__}: {exc}"}
+            raise ToolError(
+                f"Could not query supplier for {sku}: {type(exc).__name__}: {exc}"
+            ) from exc
 
         if not result.data:
-            return {"error": f"No product with SKU '{sku}'."}
+            raise ToolError(f"No product with SKU '{sku}'.")
 
         product = result.data[0]
         supplier = product["suppliers"]
         if not supplier:
-            return {"error": f"Product {sku} has no supplier assigned."}
+            raise ToolError(f"Product {sku} has no supplier assigned.")
 
-        return {
-            "sku": product["sku"],
-            "product_name": product["name"],
-            "supplier_name": supplier["name"],
-            "lead_time_days": supplier["lead_time_days"],
-            "min_order_qty": supplier["min_order_qty"],
-            "contact_email": supplier["contact_email"],
-        }
+        return SupplierInfo(
+            sku=product["sku"],
+            product_name=product["name"],
+            supplier_name=supplier["name"],
+            lead_time_days=supplier["lead_time_days"],
+            min_order_qty=supplier["min_order_qty"],
+            contact_email=supplier["contact_email"],
+        )

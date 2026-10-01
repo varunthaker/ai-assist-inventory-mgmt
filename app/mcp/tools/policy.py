@@ -2,9 +2,28 @@
 
 from typing import Annotated
 
-from pydantic import Field
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import BaseModel, Field
 
 from app.rag.search import search_documents
+
+
+class PolicyPassage(BaseModel):
+    source: str = Field(description="File name of the document the passage comes from.")
+    pages: str = Field(description="Page or page range, e.g. '2' or '1-2'.")
+    similarity: float = Field(description="Cosine similarity to the query, 0-1 (higher is closer).")
+    text: str = Field(description="The passage text.")
+
+
+class PolicySearchResult(BaseModel):
+    query: str
+    count: int
+    # `results: [{source, pages, text}]` is also the shape the chat UI turns
+    # into source chips -- keep the field names stable.
+    results: list[PolicyPassage]
+    message: str | None = Field(
+        default=None, description="Set when nothing relevant was found."
+    )
 
 
 def register(server) -> None:
@@ -31,32 +50,28 @@ def register(server) -> None:
             int,
             Field(description="How many passages to return (1-5).", ge=1, le=5),
         ] = 3,
-    ) -> dict:
+    ) -> PolicySearchResult:
         try:
             matches = search_documents(query, top_k)
-        except Exception as exc:  # noqa: BLE001 - keep the cause in the agent's context
-            return {"error": f"Policy search failed: {type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            raise ToolError(f"Policy search failed: {type(exc).__name__}: {exc}") from exc
 
-        if not matches:
-            return {
-                "query": query,
-                "count": 0,
-                "message": "No relevant policy passage found. Do not guess a policy.",
-            }
-        return {
-            "query": query,
-            "count": len(matches),
-            "results": [
-                {
-                    "source": m["title"],
-                    "pages": (
-                        str(m["page_start"])
-                        if m["page_start"] == m["page_end"]
-                        else f"{m['page_start']}-{m['page_end']}"
-                    ),
-                    "similarity": round(m["similarity"], 3),
-                    "text": m["content"],
-                }
-                for m in matches
-            ],
-        }
+        passages = [
+            PolicyPassage(
+                source=m["title"],
+                pages=(
+                    str(m["page_start"])
+                    if m["page_start"] == m["page_end"]
+                    else f"{m['page_start']}-{m['page_end']}"
+                ),
+                similarity=round(m["similarity"], 3),
+                text=m["content"],
+            )
+            for m in matches
+        ]
+        return PolicySearchResult(
+            query=query,
+            count=len(passages),
+            results=passages,
+            message=None if passages else "No relevant policy passage found. Do not guess a policy.",
+        )

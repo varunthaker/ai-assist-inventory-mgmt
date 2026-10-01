@@ -33,7 +33,13 @@ SYSTEM_PROMPT = (
     "clearly and concisely; use a short table or list when showing several "
     "products. If a tool returns no rows, say the inventory is empty rather "
     "than making up products. Never create, change or delete anything (such "
-    "as placing an order) unless the user explicitly asks for it. If a tool "
+    "as placing an order) unless the user explicitly asks for it. Before "
+    "creating or changing anything, first search the company policies for the "
+    "rules that apply (for orders: minimum quantities, approval limits, "
+    "approved suppliers, emergency rules), follow them, and tell the user which "
+    "rules apply. If a rule cannot be checked with the available data (for "
+    "example an approval limit based on order value when prices are unknown), "
+    "say so plainly instead of assuming it is met. If a tool "
     "returns an error, tell the user what went wrong. When an answer is based "
     "on a document, cite it in plain text as (file name, p. N), e.g. "
     "(procurement-policy.pdf, p. 2); if no relevant passage is found, say so "
@@ -96,7 +102,9 @@ async def get_agent() -> Any:
         model = ChatOpenAI(
             model=settings.openai_model,
             api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url or None,
+            # Explicit OpenAI default: with None the client would fall back to the
+            # OPENAI_BASE_URL env var even when it is set to "" in .env.
+            base_url=settings.openai_base_url or "https://api.openai.com/v1",
             reasoning_effort=settings.openai_reasoning_effort or None,
             temperature=0,
         )

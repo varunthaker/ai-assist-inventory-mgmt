@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS products (
     reorder_threshold INTEGER NOT NULL DEFAULT 0,
     supplier_id UUID REFERENCES suppliers(id),
     unit TEXT DEFAULT 'pcs',
+    unit_price NUMERIC(10, 2),           -- EUR per unit; see sql/add_unit_price.sql
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
